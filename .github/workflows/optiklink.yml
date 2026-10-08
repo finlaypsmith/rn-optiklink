@@ -74,6 +74,14 @@ jobs:
           gh secret set DISCORD_CLIENT_ID --body "$NEW_CID" --repo "$GITHUB_REPOSITORY"
           echo "✅ Secret DISCORD_CLIENT_ID 已自动更新"
 
+      - name: Cleanup proxy
+        if: always()
+        run: |
+          pkill -f sing-box || true
+          pkill -f 'xray run' || true
+          rm -f sing-box sing-box-config.json sing-box.log
+          rm -f xray xray-config.json xray.log
+
       - name: 提交 time.txt 保持仓库活跃
         if: always()
         env:
