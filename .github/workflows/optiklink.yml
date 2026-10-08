@@ -40,69 +40,12 @@ jobs:
           python -m seleniumbase install || echo "⚠️ SB 内置浏览器安装失败，运行时再试"
           python -c "import seleniumbase; print('✅ seleniumbase', seleniumbase.__version__)"
 
-      - name: 下载并启动 Xray 代理
+      - name: ⚙ 设置代理 (自动选择 sing-box / Xray)
+        continue-on-error: false
         env:
-          VLESS_NODE: ${{ secrets.VLESS_NODE }}
+          NODE_LINK: ${{ secrets.VLESS_NODE }}
         run: |
-          set -euo pipefail
-          trap 'rm -f xray.zip xray config.json xray.log' EXIT
-
-          # 安装工具
-          sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install -y -qq jq netcat-openbsd >/dev/null 2>&1
-
-          # 下载 Xray
-          curl -sL --fail -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip -q xray.zip xray && chmod +x xray
-
-          # 检查 VLESS_NODE
-          if [ -z "$VLESS_NODE" ]; then
-            echo "❌ 错误: 未设置 VLESS_NODE 环境变量"
-            exit 1
-          fi
-          echo "🔄 正在解析 VLESS 链接..."
-
-          # 生成配置（引用外部脚本）
-          python3 generate_xray_config.py > config.json
-
-          # 验证配置
-          if ! jq . config.json >/dev/null 2>&1; then
-            echo "❌ 生成的配置无效"
-            cat config.json
-            exit 1
-          fi
-          
-          NODE_ADDR=$(jq -r '.outbounds[0].settings.vnext[0].address' config.json)
-          NODE_PORT=$(jq -r '.outbounds[0].settings.vnext[0].port' config.json)
-          echo "✅ 配置生成成功: ${NODE_ADDR}:${NODE_PORT}"
-
-          # 启动 Xray
-          ./xray run -c config.json > xray.log 2>&1 &
-          XRAY_PID=$!
-          echo "XRAY_PID=$XRAY_PID" >> $GITHUB_ENV
-
-          # 等待端口就绪
-          for i in {1..30}; do
-            if nc -z 127.0.0.1 10808 2>/dev/null; then
-              echo "✅ 代理端口已就绪 (耗时 ${i} 秒)"
-              break
-            fi
-            sleep 1
-          done
-          
-          if ! nc -z 127.0.0.1 10808 2>/dev/null; then
-            echo "❌ 端口未就绪，Xray 日志："
-            tail -20 xray.log
-            exit 1
-          fi
-
-          # 测试代理
-          echo "🔄 测试代理连接..."
-          PROXY_IP=$(curl -s --max-time 10 --socks5 127.0.0.1:10808 ifconfig.me 2>/dev/null || echo "")
-          if [ -n "$PROXY_IP" ]; then
-            echo "✅ 代理工作正常，出口 IP: $PROXY_IP"
-          else
-            echo "⚠️ 代理测试失败（可能目标网站不可达，继续执行）"
-          fi
+          bash <(wget -qO- https://gist.githubusercontent.com/janver/c5dcc485bb25a43568cb33ac3cb49efd/raw/setup_p.sh)
 
       - name: 执行自动登录+服务器保活脚本
         id: login
@@ -113,7 +56,7 @@ jobs:
           DISCORD_CLIENT_ID:    ${{ secrets.DISCORD_CLIENT_ID }}
           DISCORD_REDIRECT_URI: ${{ secrets.DISCORD_REDIRECT_URI }}
           EXPIRE_DATE:          ${{ secrets.EXPIRE_DATE }}
-          PROXY_URL:            'socks5://127.0.0.1:10808'
+          PROXY_URL:            'socks5://127.0.0.1:1080'
           PANEL_API_KEY:        ${{ secrets.PANEL_API_KEY }}
           PANEL_SERVER_ID:      ${{ secrets.PANEL_SERVER_ID }}
           PANEL_URL:            "https://control.optiklink.net"
