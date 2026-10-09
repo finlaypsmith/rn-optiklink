@@ -13,6 +13,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from html import escape as html_escape, unescape as html_unescape
 from urllib.parse import urlparse, parse_qs, urlencode
 
 import requests as _req  # 始终可用，cloudscraper 依赖它
@@ -80,29 +81,56 @@ def create_session():
 
 _tg_session = None
 
+def tg_escape(value) -> str:
+    """Telegram HTML 模式只要求转义 & < >。quote=False：别把引号变成 &#x27; 那种实体。"""
+    return html_escape(str(value), quote=False)
+
 def tg_send(title: str, content: str):
-    """发送 Telegram 消息（Markdown），带自动重试（3次）"""
+    """发送 Telegram 消息（HTML），带自动重试（3次）
+
+    用 HTML 而不是 Markdown：Telegram 的 Markdown 把 _ * ` [ 当实体开始符，
+    动态值（用户名、报错串…）里混进一个没配对的，整条消息就被 400 拒收。
+    2026-10-09 就是这么挂的——用户名 david_chen 里的 _ 让报错停在 byte offset 111
+    （111 = 模板里用户名槽位起点 106 + 5）。HTML 只需转义 & < >，动态值走 tg_escape()。
+    """
     global _tg_session
     if _tg_session is None:
         _tg_session = _req.Session()
         _tg_session.headers.update({"Content-Type": "application/json"})
 
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-    text = f"*{title}*\n\n{content}"
-    payload = {"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
+    text = f"<b>{tg_escape(title)}</b>\n\n{content}"
+    # 第二种发法：万一 HTML 还是被解析拒绝，剥掉标签用纯文本再试一次。
+    # 这是无人值守的定时任务，通知丢了没人知道，宁可发得丑也要发出去。
+    payloads = [
+        {"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
+        {"chat_id": TG_CHAT_ID, "disable_web_page_preview": True,
+         "text": f"{title}\n\n{html_unescape(re.sub(r'<[^>]+>', '', content))}"},
+    ]
 
-    for attempt in range(3):
-        try:
-            resp = _tg_session.post(url, json=payload, timeout=15)
-            result = resp.json()
+    for index, payload in enumerate(payloads):
+        for attempt in range(3):
+            try:
+                resp = _tg_session.post(url, json=payload, timeout=15)
+                result = resp.json()
+            except Exception as e:
+                print(f"[Telegram] 请求异常 (第{attempt+1}次): {e}")
+                if attempt < 2:
+                    time.sleep(2)
+                continue
             if result.get("ok"):
                 print(f"[Telegram] 推送成功 | chat_id={mask(TG_CHAT_ID)}")
                 return
-            print(f"[Telegram] 推送失败: {result.get('description', 'unknown')}")
-        except Exception as e:
-            print(f"[Telegram] 请求异常 (第{attempt+1}次): {e}")
-        if attempt < 2:
-            time.sleep(2)
+            # 429 是限流，等一下重发有意义；其它 4xx（比如 400 解析失败）重试同一个 payload 没意义
+            if result.get("error_code") == 429:
+                wait = result.get("parameters", {}).get("retry_after", 2)
+                print(f"[Telegram] 被限流，等 {wait}s 再试")
+                time.sleep(wait)
+                continue
+            print(f"[Telegram] 推送被拒: {result.get('description', 'unknown')}")
+            break
+        if index == 0:
+            print("[Telegram] 改用纯文本重试...")
     print("[Telegram] 推送最终失败（重试耗尽）")
 
 # ─────────────────────────────────────────────────────────────
@@ -438,23 +466,24 @@ def build_report(info, server_result):
     except:
         pass
 
+    # 报告按 HTML 发给 Telegram（见 tg_send）：标签只用 <b></b>，动态值一律 tg_escape()
     lines = [
         f"## OptikLink 自动登录报告",
-        f"**状态**: {status}",
-        f"**用户名**: {info['username']}",
-        f"**服务到期**: {info['expire_date']}",
-        f"**剩余天数**: {days_left} 天",
-        f"**执行时间**: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC",
+        f"<b>状态</b>: {tg_escape(status)}",
+        f"<b>用户名</b>: {tg_escape(info['username'])}",
+        f"<b>服务到期</b>: {tg_escape(info['expire_date'])}",
+        f"<b>剩余天数</b>: {tg_escape(days_left)} 天",
+        f"<b>执行时间</b>: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC",
     ]
     if not server_result.get("skipped"):
         if "error" in server_result:
-            lines.append(f"**服务器保活**: ❌ {server_result['error'][:100]}")
+            lines.append(f"<b>服务器保活</b>: ❌ {tg_escape(server_result['error'][:100])}")
         else:
-            lines.append(f"**服务器ID**: {server_result['server_id']}")
-            lines.append(f"**启动前状态**: {server_result['status_before']}")
-            lines.append(f"**启动后状态**: {server_result['status_after']}")
+            lines.append(f"<b>服务器ID</b>: {tg_escape(server_result['server_id'])}")
+            lines.append(f"<b>启动前状态</b>: {tg_escape(server_result['status_before'])}")
+            lines.append(f"<b>启动后状态</b>: {tg_escape(server_result['status_after'])}")
             if server_result['action_taken'] == 'start':
-                lines.append("**操作**: ▶️ 已自动启动")
+                lines.append("<b>操作</b>: ▶️ 已自动启动")
     return "\n".join(lines)
 
 # ─────────────────────────────────────────────────────────────

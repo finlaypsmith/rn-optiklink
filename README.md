@@ -20,6 +20,7 @@
 | `optiklink_login.py` | 主脚本：登录、过 Turnstile、签到、服务器保活、TG 推送 |
 | `generate_xray_config.py` | 从 VLESS 链接生成 Xray 客户端配置（用于代理出口） |
 | `test_discord.py` | 调试工具：测试 Discord API 授权参数是否有效 |
+| `test_report_escaping.py` | 回归测试：校验 TG 推送文本不会被 Telegram 拒收（不联网） |
 | `time.txt` | 每次运行自动更新时间戳，保持仓库活跃 |
 | `.github/workflows/optiklink.yml` | GitHub Actions 工作流定义 |
 
@@ -62,6 +63,7 @@
 
 ## 已知问题
 
+- **TG 报告走 HTML 解析，新加的动态值必须用 `tg_escape()` 包一层。** 原来用 `parse_mode: Markdown`，用户名里的 `_`（如 `david_chen`）会被当成斜体开始符，没配对就整条消息被 400 拒收（`Can't find end of the entity starting at byte offset 111`，2026-10-09 实际挂过一次，推送全丢）。现在改成 HTML + 统一转义；万一还是被拒，会剥掉标签退化成纯文本再发一次。改完跑 `python3 test_report_escaping.py` 确认。
 - **Turnstile 令牌偶发拿不到，脚本会自动重试。** Cloudflare 的风险评分每次不同，偶发可能不放行。令牌没生成时脚本会再次点击 Turnstile 并等待，重复几次后才失败；连重试都用完仍失败才会让该次运行失败，等 cron 下次补。
 - **`提交 time.txt` 步骤写死了 `git push origin HEAD:main`。** 在非 main 分支上手动 dispatch 时，它会尝试把那个分支的代码推到 main。目前靠 fast-forward 拒绝挡住，不炸，但这是个雷。
 
